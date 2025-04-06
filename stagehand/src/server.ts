@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  ListResourcesRequestSchema, 
+  ListResourcesRequestSchema,
   ListResourceTemplatesRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
@@ -17,62 +17,102 @@ import { TOOLS, handleToolCall } from "./tools.js";
 import { PROMPTS, getPrompt } from "./prompts.js";
 import { listResources, listResourceTemplates, readResource } from "./resources.js";
 
+// Interface for API keys
+export interface ApiKeys {
+  browserbaseApiKey?: string;
+  browserbaseProjectId?: string;
+  openaiApiKey?: string;
+}
+
 // Define Stagehand configuration
-export const stagehandConfig: ConstructorParams = {
-  env:
-    process.env.BROWSERBASE_API_KEY && process.env.BROWSERBASE_PROJECT_ID
-      ? "BROWSERBASE"
-      : "LOCAL",
-  apiKey: process.env.BROWSERBASE_API_KEY /* API key for authentication */,
-  projectId: process.env.BROWSERBASE_PROJECT_ID /* Project identifier */,
-  debugDom: false /* Enable DOM debugging features */,
-  headless: false /* Run browser in headless mode */,
-  logger: (message) =>
-    console.error(logLineToString(message)) /* Custom logging function to stderr */,
-  domSettleTimeoutMs: 30_000 /* Timeout for DOM to settle in milliseconds */,
-  browserbaseSessionCreateParams: {
-    projectId: process.env.BROWSERBASE_PROJECT_ID!,
-    browserSettings: process.env.CONTEXT_ID ? {
-        context: {
-          id: process.env.CONTEXT_ID,
-          persist: true
-        }
-    } : undefined
-  },
-  enableCaching: true /* Enable caching functionality */,
-  browserbaseSessionID:
-    undefined /* Session ID for resuming Browserbase sessions */,
-  modelName: "gpt-4o" /* Name of the model to use */,
-  modelClientOptions: {
-    apiKey: process.env.OPENAI_API_KEY,
-  } /* Configuration options for the model client */,
-  useAPI: false,
-};
+export function getStagehandConfig(apiKeys?: ApiKeys): ConstructorParams {
+  // Use provided API keys or fall back to environment variables
+  const browserbaseApiKey = apiKeys?.browserbaseApiKey || process.env.BROWSERBASE_API_KEY;
+  const browserbaseProjectId = apiKeys?.browserbaseProjectId || process.env.BROWSERBASE_PROJECT_ID;
+  const openaiApiKey = apiKeys?.openaiApiKey || process.env.OPENAI_API_KEY;
+
+  return {
+    env:
+      browserbaseApiKey && browserbaseProjectId
+        ? "BROWSERBASE"
+        : "LOCAL",
+    apiKey: browserbaseApiKey /* API key for authentication */,
+    projectId: browserbaseProjectId /* Project identifier */,
+    debugDom: false /* Enable DOM debugging features */,
+    headless: false /* Run browser in headless mode */,
+    logger: (message) =>
+      console.error(logLineToString(message)) /* Custom logging function to stderr */,
+    domSettleTimeoutMs: 30_000 /* Timeout for DOM to settle in milliseconds */,
+    browserbaseSessionCreateParams: {
+      projectId: browserbaseProjectId!,
+      browserSettings: process.env.CONTEXT_ID ? {
+          context: {
+            id: process.env.CONTEXT_ID,
+            persist: true
+          }
+      } : undefined
+    },
+    enableCaching: true /* Enable caching functionality */,
+    browserbaseSessionID:
+      undefined /* Session ID for resuming Browserbase sessions */,
+    modelName: "gpt-4o" /* Name of the model to use */,
+    modelClientOptions: {
+      apiKey: openaiApiKey,
+    } /* Configuration options for the model client */,
+    useAPI: false,
+  };
+}
 
 // Global state
 let stagehand: Stagehand | undefined;
+let currentConfig: ConstructorParams | undefined;
 
-// Ensure Stagehand is initialized
-export async function ensureStagehand() {
+// Ensure Stagehand is initialized with the current configuration
+export async function ensureStagehand(apiKeys?: ApiKeys) {
   try {
-    if (!stagehand) {
-      stagehand = new Stagehand(stagehandConfig);
+    const newConfig = getStagehandConfig(apiKeys);
+
+    // Determine if we need to reinitialize with new config
+    const shouldReinitialize = !stagehand ||
+      JSON.stringify(newConfig) !== JSON.stringify(currentConfig);
+
+    if (shouldReinitialize) {
+      if (stagehand) {
+        // Attempt to close existing session
+        try {
+          await stagehand.page.close();
+        } catch (error) {
+          // Ignore errors on close
+        }
+      }
+
+      // Create new instance with updated config
+      currentConfig = newConfig;
+      stagehand = new Stagehand(currentConfig);
       await stagehand.init();
       return stagehand;
     }
 
     // Try to perform a simple operation to check if the session is still valid
     try {
+      if (!stagehand) {
+        // If stagehand is somehow still undefined, initialize it
+        stagehand = new Stagehand(currentConfig || newConfig);
+        await stagehand.init();
+        return stagehand;
+      }
+
       await stagehand.page.evaluate(() => document.title);
       return stagehand;
     } catch (error) {
       // If we get an error indicating the session is invalid, reinitialize
-      if (error instanceof Error && 
+      if (error instanceof Error &&
           (error.message.includes('Target page, context or browser has been closed') ||
-           error.message.includes('Session expired') ||
-           error.message.includes('context destroyed'))) {
+          error.message.includes('Session expired') ||
+          error.message.includes('context destroyed'))) {
         log('Browser session expired, reinitializing Stagehand...', 'info');
-        stagehand = new Stagehand(stagehandConfig);
+        currentConfig = currentConfig || newConfig;
+        stagehand = new Stagehand(currentConfig);
         await stagehand.init();
         return stagehand;
       }
@@ -86,7 +126,7 @@ export async function ensureStagehand() {
 }
 
 // Create the server
-export function createServer() {
+export function createServer(apiKeys?: ApiKeys) {
   const server = new Server(
     {
       name: "stagehand",
@@ -128,14 +168,27 @@ export function createServer() {
     try {
       logRequest('CallTool', request.params);
       operationLogs.length = 0; // Clear logs for new operation
-      
+
       if (!request.params?.name || !TOOLS.find(t => t.name === request.params.name)) {
         throw new Error(`Invalid tool name: ${request.params?.name}`);
       }
 
       // Ensure Stagehand is initialized
       try {
-        stagehand = await ensureStagehand();
+        const stagehandInstance = await ensureStagehand(apiKeys);
+        if (!stagehandInstance) {
+          throw new Error("Failed to initialize Stagehand: instance is undefined");
+        }
+
+        const result = await handleToolCall(
+          request.params.name,
+          request.params.arguments ?? {},
+          stagehandInstance
+        );
+
+        const sanitizedResult = sanitizeMessage(result);
+        logResponse('CallTool', JSON.parse(sanitizedResult));
+        return JSON.parse(sanitizedResult);
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         return {
@@ -152,16 +205,6 @@ export function createServer() {
           isError: true,
         };
       }
-
-      const result = await handleToolCall(
-        request.params.name,
-        request.params.arguments ?? {},
-        stagehand
-      );
-
-      const sanitizedResult = sanitizeMessage(result);
-      logResponse('CallTool', JSON.parse(sanitizedResult));
-      return JSON.parse(sanitizedResult);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       return {

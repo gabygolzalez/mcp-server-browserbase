@@ -46,7 +46,13 @@ export const TOOLS: Tool[] = [
     description: `Extracts all of the text from the current page.`,
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        "summary": {
+          type: "string",
+          description: "A summary of the content of the page. This should be a single sentence that captures the main objective to extract from the page.",
+        }
+      },
+      required: ["summary"],
     },
   },
   {
@@ -68,7 +74,13 @@ export const TOOLS: Tool[] = [
     description: "Takes a screenshot of the current page. Use this tool to learn where you are on the page when controlling the browser with Stagehand. Only use this tool when the other tools are not sufficient to get the information you need.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        "summary": {
+          type: "string",
+          description: "A single sentence that captures the main objective to check from the page.",
+        }
+      },
+      required: ["summary"],
     },
   },
 ];
@@ -166,15 +178,16 @@ export async function handleToolCall(
             return true;
           })
           .map(line => {
-            return line.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => 
+            return line.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
               String.fromCharCode(parseInt(hex, 16))
             );
           });
-        
+
         return {
           content: [
             {
               type: "text",
+              // text: JSON.stringify({ content: content }, null, 2),
               text: `Extracted content:\n${content.join('\n')}`,
             },
           ],
