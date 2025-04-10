@@ -235,15 +235,15 @@ export async function handleToolCall(
 
     case "screenshot":
       try {
-        const screenshotBuffer = await stagehand.page.screenshot({ 
-          fullPage: false 
+        const screenshotBuffer = await stagehand.page.screenshot({
+          fullPage: false
         });
-        
+
         // Convert buffer to base64 string and store in memory
         const screenshotBase64 = screenshotBuffer.toString('base64');
         const name = `screenshot-${new Date().toISOString().replace(/:/g, '-')}`;
         screenshots.set(name, screenshotBase64);
-        
+
         // Notify the client that the resources changed
         const serverInstance = getServerInstance();
         if (serverInstance) {
@@ -251,7 +251,7 @@ export async function handleToolCall(
             method: "notifications/resources/list_changed",
           });
         }
-        
+
         return {
           content: [
             {
