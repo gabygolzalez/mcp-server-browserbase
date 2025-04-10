@@ -31,11 +31,13 @@ export function getStagehandConfig(apiKeys?: ApiKeys): ConstructorParams {
   const browserbaseProjectId = apiKeys?.browserbaseProjectId || process.env.BROWSERBASE_PROJECT_ID;
   const openaiApiKey = apiKeys?.openaiApiKey || process.env.OPENAI_API_KEY;
 
+  // Ensure we have valid strings for all required fields
+  if (!browserbaseApiKey || !browserbaseProjectId || !openaiApiKey) {
+    throw new Error(`Missing required API keys: ${!browserbaseApiKey ? 'browserbaseApiKey ' : ''}${!browserbaseProjectId ? 'browserbaseProjectId ' : ''}${!openaiApiKey ? 'openaiApiKey' : ''}`);
+  }
+
   return {
-    env:
-      browserbaseApiKey && browserbaseProjectId
-        ? "BROWSERBASE"
-        : "LOCAL",
+    env: "BROWSERBASE", // Always use BROWSERBASE since we validate keys
     apiKey: browserbaseApiKey /* API key for authentication */,
     projectId: browserbaseProjectId /* Project identifier */,
     debugDom: false /* Enable DOM debugging features */,
@@ -44,7 +46,7 @@ export function getStagehandConfig(apiKeys?: ApiKeys): ConstructorParams {
       console.error(logLineToString(message)) /* Custom logging function to stderr */,
     domSettleTimeoutMs: 30_000 /* Timeout for DOM to settle in milliseconds */,
     browserbaseSessionCreateParams: {
-      projectId: browserbaseProjectId!,
+      projectId: browserbaseProjectId,
       browserSettings: process.env.CONTEXT_ID ? {
           context: {
             id: process.env.CONTEXT_ID,
@@ -63,66 +65,175 @@ export function getStagehandConfig(apiKeys?: ApiKeys): ConstructorParams {
   };
 }
 
-// Global state
-let stagehand: Stagehand | undefined;
-let currentConfig: ConstructorParams | undefined;
+// Session management for concurrent clients
+interface StagehandSession {
+  stagehand: Stagehand;
+  config: ConstructorParams;
+  lastUsed: number;
+}
+
+class SessionManager {
+  private sessions: Map<string, StagehandSession> = new Map();
+  private readonly sessionTimeout = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+  constructor() {
+    // Start cleanup interval to remove stale sessions
+    setInterval(() => this.cleanupStaleSessions(), 2 * 60 * 1000); // Check every 2 minutes
+  }
+
+  // Generate a unique key for each client configuration
+  private getSessionKey(config: ConstructorParams): string {
+    return JSON.stringify({
+      browserbaseApiKey: config.apiKey,
+      browserbaseProjectId: config.projectId,
+      openaiApiKey: config.modelClientOptions?.apiKey,
+      contextId: config.browserbaseSessionCreateParams?.browserSettings?.context?.id
+    });
+  }
+
+  // Get or create a session for the given API keys
+  async getSession(apiKeys?: ApiKeys): Promise<Stagehand> {
+    try {
+      const config = getStagehandConfig(apiKeys);
+      const sessionKey = this.getSessionKey(config);
+
+      // Check if we have a valid existing session
+      const existingSession = this.sessions.get(sessionKey);
+      if (existingSession) {
+        try {
+          // Verify the session has a valid page object
+          if (!existingSession.stagehand || !existingSession.stagehand.page) {
+            throw new Error("Invalid stagehand instance or missing page object");
+          }
+
+          // Test if the session is still valid
+          await existingSession.stagehand.page.evaluate(() => document.title);
+          // Update last used timestamp
+          existingSession.lastUsed = Date.now();
+          return existingSession.stagehand;
+        } catch (error) {
+          // Session is invalid, remove it
+          this.sessions.delete(sessionKey);
+          log('Browser session expired, creating new session...', 'info');
+        }
+      }
+
+      // Create a new session
+      try {
+        // First validate we have all required fields in config
+        if (!config || typeof config !== 'object') {
+          throw new Error("Invalid configuration object");
+        }
+
+        if (!config.apiKey || !config.projectId || !config.modelClientOptions?.apiKey) {
+          throw new Error(`Missing required configuration: apiKey=${!!config.apiKey}, projectId=${!!config.projectId}, modelClientOptions.apiKey=${!!config.modelClientOptions?.apiKey}`);
+        }
+
+        const stagehand = new Stagehand(config);
+
+        if (!stagehand) {
+          throw new Error("Failed to create Stagehand instance");
+        }
+
+        await stagehand.init();
+
+        if (!stagehand.page) {
+          throw new Error("Stagehand initialization completed but page object is undefined");
+        }
+
+        this.sessions.set(sessionKey, {
+          stagehand,
+          config,
+          lastUsed: Date.now()
+        });
+
+        return stagehand;
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        log(`Failed to initialize Stagehand session: ${errorMsg}`, 'error');
+        throw error;
+      }
+    } catch (error) {
+      // Handle errors from getStagehandConfig
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      log(`Failed to create or retrieve session: ${errorMsg}`, 'error');
+      throw error;
+    }
+  }
+
+  // Close a specific session
+  async closeSession(apiKeys?: ApiKeys): Promise<void> {
+    const config = getStagehandConfig(apiKeys);
+    const sessionKey = this.getSessionKey(config);
+    const session = this.sessions.get(sessionKey);
+    
+    if (session) {
+      try {
+        await session.stagehand.page.close();
+      } catch (error) {
+        // Ignore errors on close
+      } finally {
+        this.sessions.delete(sessionKey);
+      }
+    }
+  }
+
+  // Close all sessions
+  async closeAllSessions(): Promise<void> {
+    for (const session of this.sessions.values()) {
+      try {
+        await session.stagehand.page.close();
+      } catch (error) {
+        // Ignore errors on close
+      }
+    }
+    this.sessions.clear();
+  }
+
+  // Clean up stale sessions
+  private async cleanupStaleSessions(): Promise<void> {
+    const now = Date.now();
+    const keysToRemove: string[] = [];
+
+    for (const [key, session] of this.sessions.entries()) {
+      if (now - session.lastUsed > this.sessionTimeout) {
+        try {
+          await session.stagehand.page.close();
+        } catch (error) {
+          // Ignore errors on close
+        }
+        keysToRemove.push(key);
+      }
+    }
+
+    keysToRemove.forEach(key => this.sessions.delete(key));
+    if (keysToRemove.length > 0) {
+      log(`Cleaned up ${keysToRemove.length} stale sessions`, 'info');
+    }
+  }
+}
+
+// Initialize the session manager
+const sessionManager = new SessionManager();
 
 // Ensure Stagehand is initialized with the current configuration
 export async function ensureStagehand(apiKeys?: ApiKeys) {
   try {
-    const newConfig = getStagehandConfig(apiKeys);
-
-    // Determine if we need to reinitialize with new config
-    const shouldReinitialize = !stagehand ||
-      JSON.stringify(newConfig) !== JSON.stringify(currentConfig);
-
-    if (shouldReinitialize) {
-      if (stagehand) {
-        // Attempt to close existing session
-        try {
-          await stagehand.page.close();
-        } catch (error) {
-          // Ignore errors on close
-        }
-      }
-
-      // Create new instance with updated config
-      currentConfig = newConfig;
-      stagehand = new Stagehand(currentConfig);
-      await stagehand.init();
-      return stagehand;
-    }
-
-    // Try to perform a simple operation to check if the session is still valid
-    try {
-      if (!stagehand) {
-        // If stagehand is somehow still undefined, initialize it
-        stagehand = new Stagehand(currentConfig || newConfig);
-        await stagehand.init();
-        return stagehand;
-      }
-
-      await stagehand.page.evaluate(() => document.title);
-      return stagehand;
-    } catch (error) {
-      // If we get an error indicating the session is invalid, reinitialize
-      if (error instanceof Error &&
-          (error.message.includes('Target page, context or browser has been closed') ||
-          error.message.includes('Session expired') ||
-          error.message.includes('context destroyed'))) {
-        log('Browser session expired, reinitializing Stagehand...', 'info');
-        currentConfig = currentConfig || newConfig;
-        stagehand = new Stagehand(currentConfig);
-        await stagehand.init();
-        return stagehand;
-      }
-      throw error; // Re-throw if it's a different type of error
-    }
+    return await sessionManager.getSession(apiKeys);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    log(`Failed to initialize/reinitialize Stagehand: ${errorMsg}`, 'error');
+    log(`Failed to get Stagehand session: ${errorMsg}`, 'error');
     throw error;
   }
+}
+
+// Export session cleanup functions
+export async function closeSession(apiKeys?: ApiKeys) {
+  return sessionManager.closeSession(apiKeys);
+}
+
+export async function closeAllSessions() {
+  return sessionManager.closeAllSessions();
 }
 
 // Create the server

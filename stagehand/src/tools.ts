@@ -101,10 +101,6 @@ export async function handleToolCall(
               type: "text",
               text: `Navigated to: ${args.url}`,
             },
-            {
-              type: "text",
-              text: `View the live session here: https://browserbase.com/sessions/${stagehand.browserbaseSessionID}`,
-            },
           ],
           isError: false,
         };
@@ -166,9 +162,8 @@ export async function handleToolCall(
           .map(line => line.trim())
           .filter(line => {
             if (!line) return false;
-            
             if (
-                (line.includes('{') && line.includes('}')) ||         
+                (line.includes('{') && line.includes('}')) ||
                 line.includes('@keyframes') ||                         // Remove CSS animations
                 line.match(/^\.[a-zA-Z0-9_-]+\s*{/) ||               // Remove CSS lines starting with .className {
                 line.match(/^[a-zA-Z-]+:[a-zA-Z0-9%\s\(\)\.,-]+;$/)  // Remove lines like "color: blue;" or "margin: 10px;"
