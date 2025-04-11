@@ -4,8 +4,9 @@ import express from 'express';
 // @ts-ignore
 import cors from 'cors';
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { createServer, ApiKeys } from "./server.js";
+import { createServer, ApiKeys, closeSession } from "./server.js";
 import { ensureLogDirectory, registerExitHandlers, scheduleLogRotation, setupLogRotation } from "./logging.js";
+import { cleanupSessionScreenshots } from "./resources.js";
 
 // Run setup for logging
 ensureLogDirectory();
@@ -121,7 +122,23 @@ app.get('/sse', async (req, res) => {
         // Handle client disconnect
         req.on('close', () => {
           console.log(`Client disconnected (session ${sessionId})`);
-          delete sessions[sessionId];
+          // Clean up resources for this session
+          try {
+            // Close the Stagehand session associated with this client if it exists
+            closeSession(apiKeys).catch(err => {
+              console.error(`Error closing session on disconnect: ${err}`);
+            });
+
+            // Remove the session from active sessions
+            delete sessions[sessionId];
+
+            // Clean up screenshots associated with this session
+            cleanupSessionScreenshots(sessionId);
+
+            console.log(`Session ${sessionId} resources cleaned up`);
+          } catch (error) {
+            console.error(`Error cleaning up resources for session ${sessionId}:`, error);
+          }
         });
       } else {
         throw new Error("Failed to obtain session ID from SSE transport");

@@ -9,8 +9,50 @@ export const RESOURCES = [];
 // Define the resource templates
 export const RESOURCE_TEMPLATES = [];
 
-// Store screenshots in a map
+// Store screenshots in a map with session tracking
 export const screenshots = new Map<string, string>();
+
+// Track which screenshots belong to which session
+export const sessionScreenshots = new Map<string, Set<string>>();
+
+/**
+ * Add a screenshot and associate it with a session
+ * @param sessionId The ID of the session
+ * @param name The screenshot name
+ * @param data The screenshot data
+ */
+export function addScreenshot(sessionId: string, name: string, data: string) {
+  screenshots.set(name, data);
+  
+  // Add to session tracking
+  if (!sessionScreenshots.has(sessionId)) {
+    sessionScreenshots.set(sessionId, new Set());
+  }
+  sessionScreenshots.get(sessionId)?.add(name);
+}
+
+/**
+ * Clean up screenshots for a specific session
+ * @param sessionId The ID of the session to clean up
+ * @returns The number of screenshots cleaned
+ */
+export function cleanupSessionScreenshots(sessionId: string): number {
+  const sessionShots = sessionScreenshots.get(sessionId);
+  if (!sessionShots) return 0;
+  
+  let count = 0;
+  // Remove all screenshots for this session
+  for (const name of sessionShots) {
+    if (screenshots.delete(name)) {
+      count++;
+    }
+  }
+  
+  // Remove session tracking
+  sessionScreenshots.delete(sessionId);
+  
+  return count;
+}
 
 /**
  * Handle listing resources request

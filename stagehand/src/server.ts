@@ -79,6 +79,9 @@ class SessionManager {
   constructor() {
     // Start cleanup interval to remove stale sessions
     setInterval(() => this.cleanupStaleSessions(), 2 * 60 * 1000); // Check every 2 minutes
+
+    // Add memory usage monitoring
+    setInterval(() => this.logMemoryUsage(), 5 * 60 * 1000); // Log every 5 minutes
   }
 
   // Generate a unique key for each client configuration
@@ -198,18 +201,41 @@ class SessionManager {
     for (const [key, session] of this.sessions.entries()) {
       if (now - session.lastUsed > this.sessionTimeout) {
         try {
-          await session.stagehand.page.close();
+          // First close the page
+          if (session.stagehand.page) {
+            await session.stagehand.page.close();
+          }
+
+          if (session.stagehand) {
+            await session.stagehand.close();
+          }
         } catch (error) {
-          // Ignore errors on close
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          log(`Error while closing stale session: ${errorMsg}`, 'error');
         }
+
         keysToRemove.push(key);
       }
     }
 
+    // Remove sessions from the map
     keysToRemove.forEach(key => this.sessions.delete(key));
+
     if (keysToRemove.length > 0) {
       log(`Cleaned up ${keysToRemove.length} stale sessions`, 'info');
     }
+  }
+
+  // Log memory usage stats
+  private logMemoryUsage(): void {
+    const memoryUsage = process.memoryUsage();
+    const formatMemory = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`;
+
+    log(`Memory usage: RSS: ${formatMemory(memoryUsage.rss)}, ` +
+        `Heap Total: ${formatMemory(memoryUsage.heapTotal)}, ` +
+        `Heap Used: ${formatMemory(memoryUsage.heapUsed)}, ` +
+        `External: ${formatMemory(memoryUsage.external)}, ` +
+        `Active sessions: ${this.sessions.size}`, 'info');
   }
 }
 
