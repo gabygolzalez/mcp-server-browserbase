@@ -17,7 +17,8 @@
     "build": "tsc && shx chmod +x dist/*.js",
     "prepare": "npm run build",
     "watch": "tsc --watch",
-    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+	"start": "node index.js"
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.0.0",
