@@ -1,7 +1,7 @@
 FROM node:18
 
 # Set working directory to the actual app folder
-WORKDIR /app
+WORKDIR /app/browserbase
 
 # Copy only the folder that has the package.json
 COPY browserbase/package*.json ./
