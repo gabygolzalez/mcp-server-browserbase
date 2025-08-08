@@ -1,17 +1,19 @@
-# Use Node 18 as base image
 FROM node:18
 
-# Create and set the working directory
+# Set working directory to the actual app folder
 WORKDIR /app
 
-# Copy everything into the container
-COPY . .
+# Copy only the folder that has the package.json
+COPY browserbase/package*.json ./
 
-# Install dependencies
+# Install deps
 RUN npm install
 
-# Expose the default port (change if needed)
+# Copy the rest of the app
+COPY browserbase .
+
+# Set port (if your app needs one)
 EXPOSE 3000
 
-# Start the server
+# Start the app
 CMD ["npm", "start"]
