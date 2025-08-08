@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { HttpServerTransport } from "@modelcontextprotocol/sdk/server/http.js";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -626,8 +626,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
 
 // 8. Server Initialization
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const transport = new HttpServerTransport({ port: 3000 });
+  await server.connect(transport)
 }
 
 runServer().catch(console.error);
